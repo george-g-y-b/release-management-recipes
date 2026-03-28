@@ -209,6 +209,11 @@ upload_package() {
 check_dependencies
 sign_code_push_package
 
+echo "CODE_PUSH_PRIVATE_KEY_PATH=${CODE_PUSH_PRIVATE_KEY_PATH:-<unset>}"
+echo "Signed package contents:"
+unzip -l "$PACKAGE_PATH" | grep ".codepushrelease" || true
+unzip -l "$PACKAGE_PATH" | sed -n '1,40p'
+
 uuid=$(openssl rand -hex 16)
 package_id=${uuid:0:8}-${uuid:8:4}-${uuid:12:4}-${uuid:16:4}-${uuid:20:12}
 
