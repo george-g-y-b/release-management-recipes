@@ -16,6 +16,7 @@
 # IS_DISABLED=false
 # IS_MANDATORY=false
 # DESCRIPTION=example text
+# CODE_PUSH_PRIVATE_KEY_PATH=/path/to/codepush-private.pem
 # /bin/bash ./scripts/upload_code_push_package.sh
 
 if [ -z "${ROLLOUT}" ]; then
@@ -46,9 +47,10 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/utility/install_dependencies.sh"
 . "$SCRIPT_DIR/utility/request_handler.sh"
+. "$SCRIPT_DIR/utility/sign_code_push_package.sh"
 
 #######################################
-# Checks for script dependencies. Missing dependencies (curl, jq, openssl) are installed.
+# Checks for script dependencies. Missing dependencies (curl, jq, openssl, zip, unzip) are installed.
 # Globals:
 #   None
 # Arguments:
@@ -65,6 +67,14 @@ check_dependencies() {
 
   if [[ $(check_command_installed "openssl") -eq 1 ]]; then
     install_command "openssl"
+  fi
+
+  if [[ $(check_command_installed "zip") -eq 1 ]]; then
+    install_command "zip"
+  fi
+
+  if [[ $(check_command_installed "unzip") -eq 1 ]]; then
+    install_command "unzip"
   fi
 }
 
@@ -197,6 +207,7 @@ upload_package() {
 }
 
 check_dependencies
+sign_code_push_package
 
 uuid=$(openssl rand -hex 16)
 package_id=${uuid:0:8}-${uuid:8:4}-${uuid:12:4}-${uuid:16:4}-${uuid:20:12}
