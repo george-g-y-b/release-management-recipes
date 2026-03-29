@@ -19,8 +19,16 @@ For pull requests, work on your changes in a forked repository and open a pull r
 Set `CODE_PUSH_PRIVATE_KEY_PATH` to a PEM-encoded RSA private key file before invoking the script. When present, the script will:
 
 - unpack the zip package,
+- normalize the package into the upstream CodePush CLI layout (`CodePush/...`),
 - generate a CodePush `.codepushrelease` signature file,
 - rebuild the zip,
 - upload the signed package.
 
 If `CODE_PUSH_PRIVATE_KEY_PATH` is not set, the existing unsigned upload behavior is unchanged.
+
+The signing/hash implementation is adapted from the upstream CodePush CLI so that Bitrise can keep using its own upload API while matching the official package structure more closely:
+
+- `shm-open/code-push-cli@4a5916d0144e9dd2cb4beacda186d76e888ff79e`
+- `src/release-hooks/signing.ts`
+- `src/lib/hash-utils.ts`
+- `src/release-hooks/core-release.ts`

@@ -1,6 +1,12 @@
 #!/bin/bash
 #
 # Common utility functions for signing CodePush zip packages.
+#
+# The package hashing/signing behavior is adapted from the upstream CodePush CLI:
+# shm-open/code-push-cli@4a5916d0144e9dd2cb4beacda186d76e888ff79e
+# - src/release-hooks/signing.ts
+# - src/lib/hash-utils.ts
+# - src/release-hooks/core-release.ts
 
 #######################################
 # Signs a CodePush zip package in-place by adding a .codepushrelease JWT file.
@@ -35,75 +41,19 @@ sign_code_push_package() {
   local temp_dir
   temp_dir="$(mktemp -d)"
   local temp_package_path="$package_dir/signed-$package_name"
+  local normalized_root_dir="$temp_dir/__signed_release__"
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
   unzip -q "$PACKAGE_PATH" -d "$temp_dir"
 
-  TEMP_DIR="$temp_dir" CODE_PUSH_PRIVATE_KEY_PATH="$CODE_PUSH_PRIVATE_KEY_PATH" node <<'EOF'
-const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
-
-const tempDir = process.env.TEMP_DIR;
-const privateKeyPath = process.env.CODE_PUSH_PRIVATE_KEY_PATH;
-
-function isHashIgnored(relativePath) {
-  return (
-    relativePath.startsWith('__MACOSX/') ||
-    relativePath === '.DS_Store' ||
-    relativePath.endsWith('/.DS_Store') ||
-    relativePath === '.codepushrelease' ||
-    relativePath.endsWith('/.codepushrelease')
-  );
-}
-
-function computeHash(filePath) {
-  const hash = crypto.createHash('sha256');
-  hash.update(fs.readFileSync(filePath));
-  return hash.digest('hex');
-}
-
-function addContentsOfFolderToManifest(folderPath, pathPrefix, manifest) {
-  const folderFiles = fs.readdirSync(folderPath);
-
-  for (const fileName of folderFiles) {
-    const fullFilePath = path.join(folderPath, fileName);
-    const relativePath = pathPrefix ? `${pathPrefix}/${fileName}` : fileName;
-
-    if (isHashIgnored(relativePath)) {
-      continue;
-    }
-
-    const stat = fs.statSync(fullFilePath);
-    if (stat.isDirectory()) {
-      addContentsOfFolderToManifest(fullFilePath, relativePath, manifest);
-    } else {
-      manifest.push(`${relativePath}:${computeHash(fullFilePath)}`);
-    }
-  }
-}
-
-const manifest = [];
-addContentsOfFolderToManifest(tempDir, '', manifest);
-manifest.sort();
-
-const manifestString = JSON.stringify(manifest).replace(/\\\//g, '/');
-const contentHash = crypto.createHash('sha256').update(Buffer.from(manifestString, 'utf8')).digest('hex');
-
-const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
-const payload = Buffer.from(JSON.stringify({ contentHash })).toString('base64url');
-const signingInput = `${header}.${payload}`;
-const privateKey = fs.readFileSync(privateKeyPath, 'utf8');
-const signature = crypto.sign('RSA-SHA256', Buffer.from(signingInput, 'utf8'), privateKey).toString('base64url');
-
-const codePushDir = path.join(tempDir, 'CodePush');
-fs.mkdirSync(codePushDir, { recursive: true });
-fs.writeFileSync(path.join(codePushDir, '.codepushrelease'), `${signingInput}.${signature}`, 'utf8');
-
-console.log(`Signed CodePush package with contentHash=${contentHash}`);
-EOF
+  TEMP_DIR="$temp_dir" \
+  CODE_PUSH_PRIVATE_KEY_PATH="$CODE_PUSH_PRIVATE_KEY_PATH" \
+  CODE_PUSH_NORMALIZED_ROOT_DIR="$normalized_root_dir" \
+  node "$script_dir/codepush_sign_package.js"
 
   (
-    cd "$temp_dir"
+    cd "$normalized_root_dir"
     rm -f "$temp_package_path"
     zip -qr "$temp_package_path" .
   )
