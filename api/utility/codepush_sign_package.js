@@ -14,6 +14,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { Buffer } = require('buffer');
 
 const CURRENT_CLAIM_VERSION = '1.0.0';
 const METADATA_FILE_NAME = '.codepushrelease';
@@ -66,6 +67,20 @@ function copyDirectoryContents(sourceDir, destinationDir) {
       fs.copyFileSync(sourcePath, destinationPath);
     }
   }
+}
+
+function decodeJwtPayloadContentHash(jwt) {
+  const parts = jwt.split('.');
+  if (parts.length !== 3) {
+    throw new Error('Generated .codepushrelease is not a valid JWT.');
+  }
+
+  const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+  if (!payload.contentHash) {
+    throw new Error('Generated .codepushrelease JWT is missing contentHash.');
+  }
+
+  return payload.contentHash;
 }
 
 function resolvePackageSourceDir(rootDir) {
@@ -162,5 +177,16 @@ fs.writeFileSync(
   'utf8',
 );
 
+const generatedJwt = fs.readFileSync(path.join(normalizedPackageDir, METADATA_FILE_NAME), 'utf8');
+const jwtContentHash = decodeJwtPayloadContentHash(generatedJwt);
+const finalPackageHash = generatePackageHashFromDirectory(normalizedPackageDir, normalizedRootDir);
+
+if (jwtContentHash !== finalPackageHash) {
+  throw new Error(
+    `Generated package hash mismatch: JWT contentHash=${jwtContentHash}, final package hash=${finalPackageHash}`,
+  );
+}
+
 console.log(`Generated a release signature and wrote it to ${path.join('CodePush', METADATA_FILE_NAME)}`);
 console.log(`Computed CodePush contentHash=${contentHash}`);
+console.log(`Verified signed package hash=${finalPackageHash}`);
