@@ -3,62 +3,6 @@
 # Common utility functions for signing CodePush zip packages.
 
 #######################################
-# Encodes stdin as base64url without padding.
-# Globals:
-#   None
-# Arguments:
-#   None
-# Outputs:
-#   Writes base64url-encoded content to stdout.
-#######################################
-base64url_encode() {
-  openssl base64 -A | tr '+/' '-_' | tr -d '='
-}
-
-#######################################
-# Computes the SHA-256 hash of a file.
-# Globals:
-#   None
-# Arguments:
-#   File path.
-# Outputs:
-#   Writes the lowercase SHA-256 hex digest to stdout.
-#######################################
-sha256_file() {
-  openssl dgst -sha256 "$1" | awk '{print $NF}'
-}
-
-#######################################
-# Computes the SHA-256 hash of stdin.
-# Globals:
-#   None
-# Arguments:
-#   None
-# Outputs:
-#   Writes the lowercase SHA-256 hex digest to stdout.
-#######################################
-sha256_stdin() {
-  openssl dgst -sha256 | awk '{print $NF}'
-}
-
-#######################################
-# Returns zero when the relative path should be ignored for CodePush hashing.
-# Globals:
-#   None
-# Arguments:
-#   Relative path.
-#######################################
-is_codepush_hash_ignored() {
-  local relative_path="$1"
-
-  [[ "$relative_path" == __MACOSX/* ]] ||
-  [[ "$relative_path" == ".DS_Store" ]] ||
-  [[ "$relative_path" == */.DS_Store ]] ||
-  [[ "$relative_path" == ".codepushrelease" ]] ||
-  [[ "$relative_path" == */.codepushrelease ]]
-}
-
-#######################################
 # Signs a CodePush zip package in-place by adding a .codepushrelease JWT file.
 # Globals:
 #   PACKAGE_PATH
@@ -94,41 +38,69 @@ sign_code_push_package() {
 
   unzip -q "$PACKAGE_PATH" -d "$temp_dir"
 
-  local manifest_entries
-  manifest_entries="$(
-    cd "$temp_dir"
+  TEMP_DIR="$temp_dir" CODE_PUSH_PRIVATE_KEY_PATH="$CODE_PUSH_PRIVATE_KEY_PATH" node <<'EOF'
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
-    while IFS= read -r file_path; do
-      local relative_path
-      relative_path="${file_path#./}"
+const tempDir = process.env.TEMP_DIR;
+const privateKeyPath = process.env.CODE_PUSH_PRIVATE_KEY_PATH;
 
-      if is_codepush_hash_ignored "$relative_path"; then
-        continue
-      fi
+function isHashIgnored(relativePath) {
+  return (
+    relativePath.startsWith('__MACOSX/') ||
+    relativePath === '.DS_Store' ||
+    relativePath.endsWith('/.DS_Store') ||
+    relativePath === '.codepushrelease' ||
+    relativePath.endsWith('/.codepushrelease')
+  );
+}
 
-      printf '%s:%s\n' "$relative_path" "$(sha256_file "$file_path")"
-    done < <(find . -type f | LC_ALL=C sort)
-  )"
+function computeHash(filePath) {
+  const hash = crypto.createHash('sha256');
+  hash.update(fs.readFileSync(filePath));
+  return hash.digest('hex');
+}
 
-  local manifest_json
-  manifest_json="$(printf '%s\n' "$manifest_entries" | jq -R . | jq -s -c '.' | sed 's#\\/#/#g')"
-  local content_hash
-  content_hash="$(printf '%s' "$manifest_json" | sha256_stdin)"
+function addContentsOfFolderToManifest(folderPath, pathPrefix, manifest) {
+  const folderFiles = fs.readdirSync(folderPath);
 
-  local jwt_header
-  jwt_header="$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | base64url_encode)"
-  local jwt_payload
-  jwt_payload="$(printf '%s' "{\"contentHash\":\"$content_hash\"}" | base64url_encode)"
-  local jwt_signing_input
-  jwt_signing_input="${jwt_header}.${jwt_payload}"
-  local jwt_signature
-  jwt_signature="$(
-    printf '%s' "$jwt_signing_input" \
-      | openssl dgst -sha256 -sign "$CODE_PUSH_PRIVATE_KEY_PATH" \
-      | base64url_encode
-  )"
+  for (const fileName of folderFiles) {
+    const fullFilePath = path.join(folderPath, fileName);
+    const relativePath = pathPrefix ? `${pathPrefix}/${fileName}` : fileName;
 
-  printf '%s.%s' "$jwt_signing_input" "$jwt_signature" > "$temp_dir/.codepushrelease"
+    if (isHashIgnored(relativePath)) {
+      continue;
+    }
+
+    const stat = fs.statSync(fullFilePath);
+    if (stat.isDirectory()) {
+      addContentsOfFolderToManifest(fullFilePath, relativePath, manifest);
+    } else {
+      manifest.push(`${relativePath}:${computeHash(fullFilePath)}`);
+    }
+  }
+}
+
+const manifest = [];
+addContentsOfFolderToManifest(tempDir, '', manifest);
+manifest.sort();
+
+const manifestString = JSON.stringify(manifest).replace(/\\\//g, '/');
+const contentHash = crypto.createHash('sha256').update(Buffer.from(manifestString, 'utf8')).digest('hex');
+
+const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
+const payload = Buffer.from(JSON.stringify({ contentHash })).toString('base64url');
+const signingInput = `${header}.${payload}`;
+const privateKey = fs.readFileSync(privateKeyPath, 'utf8');
+const signature = crypto.sign('RSA-SHA256', Buffer.from(signingInput, 'utf8'), privateKey).toString('base64url');
+
+const codePushDir = path.join(tempDir, 'CodePush');
+fs.mkdirSync(codePushDir, { recursive: true });
+fs.writeFileSync(path.join(codePushDir, '.codepushrelease'), `${signingInput}.${signature}`, 'utf8');
+
+console.log(`Signed CodePush package with contentHash=${contentHash}`);
+EOF
 
   (
     cd "$temp_dir"
